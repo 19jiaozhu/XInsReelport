@@ -20,12 +20,14 @@
 | 输入 | 推文链接（可批量） | Reel / 帖子链接（可批量） |
 | 需要登录 | **不需要** | **需要一次**（专用浏览器，登一次长期有效） |
 | 画质 | 该推可用的最高档 mp4 | 原视频档（视频轨 + 音频轨） |
-| 自动命名 | ✅ 13 个占位符 | ✅ 10 个占位符 |
+| 只列直链 | ✅ 全部档位 | ✅ 全部档位（去 Range，可直接下载） |
+| 自动命名 | ✅ 13 个占位符，开头带发布者账号 | ✅ 11 个占位符，开头带发布者账号 |
 | 批量 | ✅ 清单文件 / 目录 / 剪贴板 / 管道 | ✅ 同左 |
 | 断点容错 | 失败自动重试、直链过期自动重取 | 自动重试、失败不留半截文件 |
 
+- **默认就下载**：不勾「只列出」时直接下最高清晰度；勾了才只把各档直链列出来，一个字节都不下。
 - **最高画质优先**：X 侧按「像素总数优先、码率其次」排序，HLS 只在天梯里没有 mp4 时兜底。
-- **自动命名**：默认模板直接出来可读的文件名，撞名自动加 ` (2)`，不覆盖。
+- **自动命名**：文件名开头永远是发布者账号（模板里没写 `{user}` 也会自动补），撞名自动加 ` (2)`，不覆盖。
 - **零依赖**：只用 Node 内置模块。
 - **ffmpeg 自动获取**：仓库里不带二进制，第一次需要合轨时自己下一份。
 
@@ -84,8 +86,8 @@ XInsReelport\
 
 双击 `ui.cmd`，浏览器自动打开 `http://127.0.0.1:8737/`（端口被占自动顺延到 8738、8739…）。关掉那个命令行窗口，服务就停了。
 
-- **X 标签页**：贴链接 → 选保存目录 / 命名模板 → 勾「直接下载视频」→ 开始。想先看画质就勾「列出所有清晰度档位」。
-- **Instagram 标签页**：直接贴链接，`/reel/`、`/reels/`、`/p/` 都认，可以一次贴一批。第一次点「登录 Instagram（第一次）」。
+- **X 标签页**：贴链接 → 选保存目录 / 命名模板 → 开始。**默认就是直接下载最高清晰度**；想先看画质，勾「只列出所有清晰度媒体直链，不下载」。
+- **Instagram 标签页**：直接贴链接，`/reel/`、`/reels/`、`/p/` 都认，可以一次贴一批。第一次点「登录 Instagram（第一次）」。同样默认直接下载最高清晰度，勾「只列出所有清晰度媒体直链，不下载」才只列直链。
 - 底部是实时日志和已下载文件列表（可直接播放 / 另存）。
 
 所有子进程都是隐藏运行的，不会额外弹黑框；日志走本地文件，由页面轮询。
@@ -100,10 +102,10 @@ XInsReelport\
 # 只输出最高画质直链（一行，方便复制）
 node xvideo.mjs "https://x.com/<user>/status/<id>/video/1"
 
-# 列出所有档位
-node xvideo.mjs "https://x.com/<user>/status/<id>" --all
+# 只列出所有清晰度档位的直链，不下载
+node xvideo.mjs "https://x.com/<user>/status/<id>" --list
 
-# 直接下载
+# 直接下载（不勾选默认就是这个行为）
 node xvideo.mjs "https://x.com/<user>/status/<id>" --download --out downloads
 ```
 
@@ -128,13 +130,14 @@ node xvideo.mjs --clip -d                                # 剪贴板
 | `--stdin` / `--clip` | 从管道 / 剪贴板读 |
 | `-d, --download` | 下载最高画质 |
 | `-o, --out <目录>` | 下载目录（默认当前目录） |
-| `-N, --name <模板>` | 文件名模板，默认 `{user}_{date}_{title}` |
+| `-N, --name <模板>` | 文件名模板，默认 `{user}_{date}_{title}`；开头永远自动带发布者账号 |
 | `-c, --concurrency <N>` | 并发数，默认 3，上限 16 |
 | `--all-media` | 一条推有多个视频时全部下载 |
 | `-n, --index <N>` | 只取第 N 个视频（从 0 起） |
-| `-a, --all` | 列出所有档位和 HLS |
+| `-l, --list` | 只列出所有清晰度档位的直链，不下载 |
+| `--list-file <文件>` | 顺便把列出的直链写进文件 |
+| `-a, --all` | 下载时也把档位打进日志 |
 | `--force` | 同名也重下（默认跳过） |
-| `--list <文件>` | 只写直链进文件 |
 | `--json` | 结束时输出 JSON 汇总 |
 | `-p, --proxy <url\|auto>` | 走代理；`auto` 探测常见端口 |
 
@@ -164,11 +167,13 @@ Instagram 和 X 完全是两回事：网页版用 MSE 播放，DOM 里只有 `bl
 
 ```powershell
 node igauto.mjs --login                                    # 第一次：登录一次
-node igauto.mjs "https://www.instagram.com/reels/<code>/"   # 之后：只给链接
+node igauto.mjs "https://www.instagram.com/reels/<code>/"   # 之后：只给链接，直接下最高清晰度
 node igauto.mjs "链接1" "链接2" --out-dir downloads          # 多条，浏览器只起一次
 node igauto.mjs --file list.txt --out-dir downloads         # 从文件读
-node igauto.mjs "链接" --list                               # 只看抓到什么
+node igauto.mjs "链接" --list                               # 只列出所有清晰度直链，不下载
 ```
+
+**默认行为**：不勾「只列出」就下载最高清晰度；加了 `--list` 才只列直链。
 
 ### 它做了什么
 
@@ -186,11 +191,11 @@ node igauto.mjs "链接" --list                               # 只看抓到什�
 |---|---|
 | `--login` | 打开窗口登录一次 |
 | `--logout` | 清掉本机保存的登录态（分享前用） |
-| `--list, -l` | 只列识别到的媒体，不下载 |
+| `--list, -l` | 只列出所有清晰度档位的直链，不下载 |
 | `-f, --file <文件>` | 从文件读链接，一行一条 |
 | `--out-dir <目录>` | 输出目录（配合自动命名） |
-| `-N, --name <模板>` | 文件名模板，默认 `{user}_{date}_{dur}s` |
-| `--user <名字>` | 手动指定 `{user}` 的值（链接里没有用户名时用） |
+| `-N, --name <模板>` | 文件名模板，默认 `{user}_{date}_{dur}s`；开头永远自动带发布者账号 |
+| `--user <名字>` | 手动指定 `{user}` 的值（默认从页面 `og:url` 自动读） |
 | `--headful` | 显示浏览器窗口（排查用） |
 | `--profile <目录>` | 换一个配置目录 |
 | `--browser <exe>` | 指定 Edge / Chrome 路径 |
@@ -204,15 +209,20 @@ node igauto.mjs "链接" --list                               # 只看抓到什�
 | 占位符 | 含义 | 例子 |
 |---|---|---|
 | `{user}` | 作者用户名 | `someuser` |
-| `{date}` `{time}` | 下载日期 / 时分秒 | `2026-01-15` / `082650` |
+| `{date}` `{time}` | **发布时间** 日期 / 时分秒（和 X 一致） | `2026-01-15` / `082650` |
 | `{dur}` | 时长（秒） | `8` |
 | `{asset}` | `efg` 里的 `xpv_asset_id` | `1234567890123456` |
 | `{shortcode}` | 链接里的短码 | `CxAbCdEfGh1` |
 | `{vbr}` | 视频码率（kbps） | `731` |
 | `{w}` `{h}` | 分辨率（从 mp4 的 `avc1` 里读） | `720` / `1280` |
 | `{tag}` | 编码档位 tag | `dash_baseline_1_v1` |
+| `{src}` | 来源标记（固定 `ig`） | `ig` |
 
-`{user}` 和 `{shortcode}` 只能从**页面链接**里取（CDN 地址里没有用户名），所以想让它们有值，就把页面链接一起传给脚本；或者用 `--user <name>` 手动指定。
+`{user}` 一般由自动模式从页面的 `og:url` 读出来（形如 `instagram.com/<用户名>/reel/<短码>/`），所以直接用自动模式不必手动给；手动路线（`igd.mjs`）只喂 CDN 地址时取不到作者，可以用 `--user <name>` 补上。
+
+`{date}` / `{time}` 是这条视频的**发布时间**，取值顺序：`/api/v1/media/<id>/info/` 的 `taken_at`（自动模式在登录态页面里请求，最准）→ 页面预取数据里的 `taken_at`（按短码定位，避免拿到推荐流里别人的时间）→ 都拿不到时退回下载时刻。手动路线可以加 `--taken-at <unix秒>` 自己指定。
+
+文件名**开头永远是发布者账号**：模板里没写 `{user}` 会自动补在最前面，所以 `--name "{date}_{dur}s"` 出来是 `someuser 2026-01-15 12s.mp4`。
 
 ### 手动路线（自动模式失灵时）
 
@@ -220,7 +230,7 @@ node igauto.mjs "链接" --list                               # 只看抓到什�
 
 ```powershell
 node igd.mjs --from dump.txt --out-dir downloads   # 自动挑轨、下载、合轨、命名
-node igd.mjs --from dump.txt --list                # 先看认出了哪些
+node igd.mjs --from dump.txt --list                # 只列出全部档位直链，不下载
 node igd.mjs --clip --out-dir downloads            # 读剪贴板
 node igd.mjs --video "<m86>" --audio "<m78>" -o reel.mp4   # 手动指定两条轨
 ```

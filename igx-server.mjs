@@ -218,10 +218,11 @@ async function handle(req, res, urlObj) {
       fs.writeFileSync(listFile, links, 'utf8');
 
       const argv = [...nodeArgs, path.join(HERE, 'xvideo.mjs'), '--file', listFile, '--out', outDir];
-      if (body.download) argv.push('--download');
+      // 勾了「只列出直链」就只列不下载；否则默认下载最高清晰度
+      if (body.allLevels) argv.push('--list');
+      else argv.push('--download');
       if (body.force) argv.push('--force');
       if (body.nameTemplate && body.nameTemplate.trim()) argv.push('--name', body.nameTemplate.trim());
-      if (body.allLevels) argv.push('--all');
       const job = startJob('x', argv, env, { outDir, listFile });
       return sendJSON(res, 200, { id: job.id });
     }

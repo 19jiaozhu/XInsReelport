@@ -177,6 +177,13 @@ function mp4Dims(buf) {
 
 const DEFAULT_NAME = '{user}_{date}_{dur}s';
 
+// 文件名必须以发布者账号开头：模板里没写 {user} 就自动补在最前面
+function withAuthorPrefix(template) {
+  const t = String(template || '').trim();
+  if (!t) return DEFAULT_NAME;
+  return /\{user\}/i.test(t) ? t : `{user}_${t}`;
+}
+
 function buildName(template, ctx) {
   let name = String(template).replace(/\{(\w+)\}/g, (m, k) => (ctx[k] === undefined ? '' : String(ctx[k])));
   name = sanitize(name, 110);
@@ -207,11 +214,12 @@ const USAGE =
   '  node igd.mjs --from <地址文件> --out-dir downloads   # DevTools 复制的地址列表 / Copy as cURL\n' +
   '  node igd.mjs --clip --out-dir downloads             # 同上，从剪贴板读\n' +
   '  node igd.mjs --video <m86> --audio <m78> --out-dir downloads\n' +
-  '  文件名模板 --name "{user}_{date}_{dur}s"\n' +
+  '  文件名模板 --name "{user}_{date}_{dur}s"（开头永远是发布者账号，没写 {user} 会自动补）\n' +
   '  可用占位符：{user} {date} {time} {dur} {asset} {shortcode} {vbr} {w} {h} {tag} {src}\n' +
+  '  {date}/{time} 是发布时间；拿不到时退回下载时刻。可用 --taken-at <unix秒> 手动指定。\n' +
   '  {user} 只有在同时给出 instagram 页面链接、或用 --user 指定时才有值，否则是 ig。\n' +
   '  ffmpeg 找不到会自动下载一份（--no-fetch 可禁用）。\n' +
-  '加 --list 可以先看看认出了哪些媒体。';
+  '  加 --list/-l：只列出所有清晰度档位的直链，不下载。';
 
 // 只给了页面链接、没给轨道地址时的提示：告诉用户该往哪走
 const PAGE_ONLY_HINT = (link) =>
@@ -232,7 +240,7 @@ async function main() {
   let audioUrl = opt(['--audio']);
   const outOpt = opt(['--out', '-o']);
   const outDirOpt = opt(['--out-dir', '--dir']);
-  const nameTpl = opt(['--name', '-N']) || DEFAULT_NAME;
+  const nameTpl = withAuthorPrefix(opt(['--name', '-N']));
   const quiet = has(['--quiet', '-q']);
   let pickedAsset = null;
   let pageUser = null;
@@ -273,14 +281,38 @@ async function main() {
       pageShortcode = pageHit[2];
     }
 
-    // --list：只列候选，不下载
+    // --list：把每个媒体、每档清晰度的直链全打出来，不下任何字节
     if (has(['--list', '-l'])) {
       if (!picked.groups || !picked.groups.length) die(4, '没从这些地址里认出任何 Instagram 媒体（efg 参数缺失或不是 CDN 地址）。');
-      for (const g of picked.groups.sort((a, b) => b.hits - a.hits || b.vmax - a.vmax)) {
+      const sorted = picked.groups.slice().sort((a, b) => b.hits - a.hits || b.vmax - a.vmax);
+      // 同一个码率可能有多个 tag（不同编码规格），这里按「码率 + tag」去重后再编号
+      const dedupe = (list) => {
+        const seen = new Set();
+        const out = [];
+        for (const x of list.slice().sort((a, b) => b.e.bitrate - a.e.bitrate)) {
+          const key = `${x.e.bitrate}|${x.e.tag}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(x);
+        }
+        return out;
+      };
+      for (const g of sorted) {
         const mark = g.asset === picked.asset ? '*' : ' ';
-        console.log(`${mark} media ${g.asset}  ${g.duration ?? '?'}s  视频 ${(g.vmax / 1000).toFixed(0)}kbps  ${g.nAudio ? '有音频' : '无音频'}  请求 ${g.hits} 条`);
-        for (const t of g.tags) console.log(`    ${t}`);
+        const vids = dedupe(g.list.filter((x) => !x.e.isAudio));
+        const auds = dedupe(g.list.filter((x) => x.e.isAudio));
+        console.log(`${mark} media ${g.asset}  ${g.duration ?? '?'}s  ${vids.length} 个视频档  ${auds.length ? `带音频（${auds.length} 档）` : '无音频轨'}  请求 ${g.hits} 条`);
+        vids.forEach((x, i) => {
+          const top = i === 0 ? '   ← 最高（默认下这个）' : '';
+          console.log(`    视频 ${i + 1}. ${(x.e.bitrate / 1000).toFixed(0)}kbps  ${x.e.tag}${top}`);
+          console.log(`      ${stripRange(x.url)}`);
+        });
+        auds.forEach((x, i) => {
+          console.log(`    音频 ${i + 1}. ${(x.e.bitrate / 1000).toFixed(0)}kbps  ${x.e.tag}`);
+          console.log(`      ${stripRange(x.url)}`);
+        });
       }
+      console.log('\n直链已去掉 bytestart/byteend，可直接整段下载。* 是会自动选中的那条，不勾「只列出」时下载的就是它最高的一档。');
       return null;
     }
 
@@ -333,7 +365,14 @@ async function main() {
       fs.mkdirSync(dir, { recursive: true });
       const sc = pageShortcode || (urlArg || '').match(/\/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]{5,})/)?.[1];
       const dims = mp4Dims(v);
-      const d = new Date();
+      // {date}/{time} 统一是「发布时间」，跟 X 那边对齐。发布时间由 igauto.mjs 从
+      // /api/v1/media/<id>/info/ 里读出来，用 --taken-at 传进来（unix 秒）。
+      // 手动路线只喂 CDN 地址时拿不到发布时间，退回下载时刻，并在下面提示一句。
+      const takenAt = Number(opt(['--taken-at'])) || 0;
+      const d = takenAt > 0 ? new Date(takenAt * 1000) : new Date();
+      if (!quiet && !takenAt && !outOpt) {
+        console.log('（没拿到发布时间，{date}/{time} 用下载时刻代替；自动模式会自动读发布时间）');
+      }
       const ctx = {
         user: sanitize(opt(['--user']) || pageUser || 'ig', 30),
         date: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`,

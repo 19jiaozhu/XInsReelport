@@ -117,7 +117,8 @@ function parseArgs(argv) {
     name: null,
     concurrency: 3,
     force: false,
-    list: null,
+    list: false,          // --list：只打印所有档位的直链，不下载
+    listFile: null,       // --list-file <文件>：同时把这些直链写进文件
     json: false,
     proxy: null,
     help: false,
@@ -136,7 +137,8 @@ function parseArgs(argv) {
     else if (a === '--name' || a === '-N') out.name = next();
     else if (a === '--concurrency' || a === '-c') out.concurrency = Math.max(1, Math.min(16, Number(next()) || 3));
     else if (a === '--force') out.force = true;
-    else if (a === '--list') out.list = next();
+    else if (a === '--list' || a === '-l') out.list = true;
+    else if (a === '--list-file') out.listFile = next();
     else if (a === '--json') out.json = true;
     else if (a === '--proxy' || a === '-p') out.proxy = next();
     else if (a.startsWith('--proxy=')) out.proxy = a.slice(8);
@@ -355,6 +357,14 @@ function dateParts(ts) {
 }
 
 const DEFAULT_TEMPLATE = '{user}_{date}_{title}';
+
+// 文件名必须以发布者账号开头。用户自己写的模板里没有 {user} 就自动补成 {user}_<模板>，
+// 这样不管模板怎么改，一眼都能看出这条是谁发的。
+function withAuthorPrefix(template) {
+  const t = String(template || '').trim();
+  if (!t) return DEFAULT_TEMPLATE;
+  return /\{user\}/i.test(t) ? t : `{user}_${t}`;
+}
 
 function makeContext(tweet, v, group, gi, groups, src) {
   const { date, time } = dateParts(tweet.created);
@@ -615,7 +625,7 @@ async function main() {
     fs.mkdirSync(outDir, { recursive: true });
   }
 
-  const template = args.name || DEFAULT_TEMPLATE;
+  const template = withAuthorPrefix(args.name || DEFAULT_TEMPLATE);
   const used = new Set();
   const records = [];
   const links = [];
@@ -692,8 +702,21 @@ async function main() {
 
         for (const { group, gi } of picks) {
           const best = group.sorted[0];
+          // --list：只把「全部清晰度档位 + 直链」打出来，一个字节都不下
           if (args.list) {
-            links.push(best.url);
+            const tag2 = `${tag} @${tweet.author?.screen_name || '?'}`;
+            console.log(`${tag2}  ${group.list.length} 个档位（从高到低）:`);
+            group.sorted.forEach((v, i) => {
+              console.log(`    ${i + 1}. ${label(v)}${i === 0 ? '   ← 最高（不勾选时下这个）' : ''}`);
+              console.log(`       ${v.url}`);
+            });
+            const hls = group.list.filter((v) => v.isHls);
+            if (hls.length) {
+              console.log('    HLS 播放列表:');
+              hls.forEach((v) => console.log(`       ${v.url}`));
+            }
+            for (const v of group.sorted) links.push(v.url);
+            for (const v of hls) links.push(v.url);
             records.push({ id: task.id, ok: true, listed: true, url: best.url });
             continue;
           }
@@ -742,9 +765,9 @@ async function main() {
 
   await Promise.all(Array.from({ length: Math.min(args.concurrency, total) }, worker));
 
-  // 清单
-  if (args.list) {
-    const p = path.resolve(args.list);
+  // 清单（--list 只打印；给了 --list-file 才额外写文件）
+  if (args.list && args.listFile) {
+    const p = path.resolve(args.listFile);
     fs.writeFileSync(p, links.join('\n') + (links.length ? '\n' : ''), 'utf8');
     console.log(`\n已写入 ${links.length} 条直链: ${p}`);
   }
@@ -791,7 +814,8 @@ function printHelp() {
   -n, --index <N>         只取一条推里第 N 个视频（从 0 起）
   -a, --all               列出全部档位
       --force             同名也重新下载（默认跳过已存在的）
-      --list <文件>       只取直链写进文件，不下载
+  -l, --list              只列出所有清晰度档位的直链，不下载
+      --list-file <文件>  同时把列出的直链写进文件
       --json              结束时输出 JSON 汇总
   -p, --proxy <url|auto>  走代理；auto 自动探测本机 7890 等端口
   -h, --help              帮助

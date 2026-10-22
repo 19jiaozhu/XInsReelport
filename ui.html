@@ -134,14 +134,13 @@ https://x.com/another/status/9876543210987654321"></textarea>
           <input type="text" id="xOut" placeholder="留空 = 工具目录下的 downloads">
         </div>
         <div class="col">
-          <label>文件命名 <span class="hint">—— 可留空</span></label>
-          <input type="text" id="xName" placeholder="{user}_{date}_{title}">
+          <label>文件命名 <span class="hint">—— 可留空，开头自动加发布者账号</span></label>
+          <input type="text" id="xName" placeholder="{date}_{title}">
         </div>
       </div>
 
       <div class="checks">
-        <label><input type="checkbox" id="xDownload" checked> 直接下载视频</label>
-        <label><input type="checkbox" id="xAll"> 列出所有清晰度档位</label>
+        <label><input type="checkbox" id="xListOnly"> 只列出所有清晰度媒体直链，不下载</label>
         <label><input type="checkbox" id="xForce"> 同名文件重新下载</label>
       </div>
 
@@ -151,9 +150,11 @@ https://x.com/another/status/9876543210987654321"></textarea>
       </div>
 
       <div class="tips">
-        命名可用占位符：<code>{user}</code> <code>{date}</code> <code>{title}</code> <code>{id}</code>
+        不勾上面那个就是<b>直接下载最高清晰度</b>。<br>
+        命名可用占位符：<code>{user}</code> <code>{date}</code> <code>{time}</code> <code>{title}</code> <code>{id}</code>
         <code>{size}</code> <code>{w}</code> <code>{h}</code> <code>{dur}</code> <code>{i}</code> <code>{n}</code> <code>{src}</code>
-        <br>同名文件默认跳过，不会覆盖。
+        （<code>{date}</code> / <code>{time}</code> 是推文发布时间）
+        <br>文件名开头永远是发布者账号，模板里不写 <code>{user}</code> 也会自动补上。同名文件默认跳过，不会覆盖。
       </div>
     </div>
   </section>
@@ -178,20 +179,25 @@ https://www.instagram.com/p/CyIjKlMnOp2/"></textarea>
           <input type="text" id="igOut" placeholder="留空 = 工具目录下的 downloads">
         </div>
         <div class="col">
-          <label>文件名模板 <span class="hint">—— 留空 = {user}_{date}_{dur}s，自动命名</span></label>
-          <input type="text" id="igName" placeholder="{user}_{date}_{dur}s">
+          <label>文件名模板 <span class="hint">—— 留空 = {user}_{date}_{dur}s，开头自动加发布者账号</span></label>
+          <input type="text" id="igName" placeholder="{date}_{dur}s">
         </div>
       </div>
 
       <div class="tips" style="margin-top:10px">
         模板占位符：<code>{user}</code> <code>{date}</code> <code>{time}</code> <code>{dur}</code>
         <code>{asset}</code> <code>{shortcode}</code> <code>{vbr}</code> <code>{w}</code> <code>{h}</code>
-        <code>{tag}</code>。同名文件不会覆盖，会自动加 <code>(2)</code>。
+        <code>{tag}</code>。文件名开头永远是发布者账号（模板里不写 <code>{user}</code> 也会自动补上）。
+        <code>{date}</code> / <code>{time}</code> 是<b>发布时间</b>，跟 X 那边一致。同名文件不会覆盖，会自动加 <code>(2)</code>。
       </div>
 
       <div class="checks">
-        <label><input type="checkbox" id="igListOnly"> 只列出识别到的媒体，不下载</label>
+        <label><input type="checkbox" id="igListOnly"> 只列出所有清晰度媒体直链，不下载</label>
         <label><input type="checkbox" id="igForce"> 同名文件重新下载</label>
+      </div>
+
+      <div class="tips">
+        不勾上面那个就是<b>直接下载最高清晰度</b>。
       </div>
 
       <div class="actions">
@@ -445,8 +451,7 @@ $('xGo').addEventListener('click', () => {
     links,
     outDir: $('xOut').value.trim(),
     nameTemplate: $('xName').value.trim(),
-    download: $('xDownload').checked,
-    allLevels: $('xAll').checked,
+    allLevels: $('xListOnly').checked,
     force: $('xForce').checked,
   });
 });

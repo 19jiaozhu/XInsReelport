@@ -16,7 +16,7 @@
  * 用法：
  *   node igauto.mjs --login                       # 第一次：打开窗口登录 Instagram
  *   node igauto.mjs <ig链接>                       # 之后：只给链接
- *   node igauto.mjs <ig链接> --list                # 只看抓到什么，不下载
+ *   node igauto.mjs <ig链接> --list                # 只列出所有清晰度档位的直链，不下载
  *   node igauto.mjs <ig链接> --out-dir downloads --name "{user}_{date}_{dur}s"
  */
 
@@ -540,6 +540,14 @@ async function doLogin(existing = null) {
 }
 
 // ---------- efg 解码（与 igd.mjs 同口径） ----------
+// 列直链时把分片参数去掉，直接就能整段下载
+function stripRange(url) {
+  const u = new URL(url);
+  u.searchParams.delete('bytestart');
+  u.searchParams.delete('byteend');
+  return u.toString();
+}
+
 function decodeEfg(url) {
   try {
     const raw = new URL(url).searchParams.get('efg');
@@ -614,7 +622,30 @@ async function grab(pageUrl, shared = null) {
           const v = document.querySelector('video');
           let d = 0, t = 0;
           if (v) { try { d = v.duration || 0; } catch {} t = v.currentTime || 0; }
-          return JSON.stringify({ url: u, title: document.title, dur: d, t,
+          // 作者账号：只认 og:url / canonical 里的 /<用户名>/reel|p|tv/<短码>/。
+          // 页面上「一段路径」的链接里会混进当前登录者自己的头像链接，不能用那个。
+          let author = '';
+          const pick = (s) => {
+            const m = String(s || '').match(/instagram\\.com\\/([A-Za-z0-9._]{1,30})\\/(?:reel|reels|p|tv)\\//i);
+            return m ? m[1] : '';
+          };
+          const og = document.querySelector('meta[property="og:url"]');
+          const can = document.querySelector('link[rel="canonical"]');
+          author = pick(og && og.getAttribute('content')) || pick(can && can.getAttribute('href'));
+          if (!author) {
+            // 退路：twitter:title 形如 "Some One (@someuser) • Instagram Reels"
+            const tw = document.querySelector('meta[name="twitter:title"]');
+            const m = String((tw && tw.getAttribute('content')) || '').match(/\\(@([A-Za-z0-9._]{1,30})\\)/);
+            if (m) author = m[1];
+          }
+          // 媒体 id：al:ios:url 形如 instagram://media?id=4009954118793295645
+          // 有了它就能在页面上下文里请求 /api/v1/media/<id>/info/ 拿发布时间。
+          let mediaId = '';
+          const ios = document.querySelector('meta[property="al:ios:url"]');
+          const mi = String((ios && ios.getAttribute('content')) || '').match(/id=(\\d+)/);
+          if (mi) mediaId = mi[1];
+          const code = (u.match(/\\/(?:reel|reels|p|tv)\\/([A-Za-z0-9_-]{5,})/) || [])[1] || '';
+          return JSON.stringify({ url: u, title: document.title, dur: d, t, author, mediaId, code,
             loginWall: /\\/accounts\\/login/.test(u) || !!document.querySelector('input[name="username"]'),
             videos: document.querySelectorAll('video').length });
         })()`,
@@ -624,6 +655,7 @@ async function grab(pageUrl, shared = null) {
     };
 
     let st = await state();
+    if (process.env.IGDEBUG) log(`调试：${JSON.stringify(st)}`);
     if (st.loginWall) {
       die(6, `Instagram 要求登录（${PROFILE} 里的登录态可能过期了）。\n重新登录：node igauto.mjs --login`);
     }
@@ -698,11 +730,94 @@ async function grab(pageUrl, shared = null) {
       log('\n识别到的媒体（* 为选中项）：');
       const sorted = [...sums].sort((a, b) => b.hits - a.hits || b.vmax - a.vmax);
       for (const g of sorted) {
-        log(`  ${g.asset === chosen?.asset ? '*' : ' '} media ${g.asset}  ${g.duration ?? '?'}s  视频 ${(g.vmax / 1000).toFixed(0)}kbps  ${g.nAudio ? '有音频' : '无音频'}  请求 ${g.hits} 条`);
+        const mark = g.asset === chosen?.asset ? '*' : ' ';
+        const vids = g.list.filter((x) => !x.e.isAudio).sort((a, b) => b.e.bitrate - a.e.bitrate);
+        const auds = g.list.filter((x) => x.e.isAudio).sort((a, b) => b.e.bitrate - a.e.bitrate);
+        log(`${mark} media ${g.asset}  ${g.duration ?? '?'}s  ${vids.length} 个视频档  ${auds.length ? '带音频轨' : '无音频轨'}  请求 ${g.hits} 条`);
+        const seenV = new Set();
+        let vi = 0;
+        for (const x of vids) {
+          const key = `${x.e.bitrate}|${x.e.tag}`;
+          if (seenV.has(key)) continue;
+          seenV.add(key);
+          vi += 1;
+          const top = vi === 1 ? '   ← 最高（默认下这个）' : '';
+          log(`    视频 ${vi}. ${(x.e.bitrate / 1000).toFixed(0)}kbps  ${x.e.tag}${top}`);
+          log(`      ${stripRange(x.url)}`);
+        }
+        const seenA = new Set();
+        let ai = 0;
+        for (const x of auds) {
+          const key = `${x.e.bitrate}|${x.e.tag}`;
+          if (seenA.has(key)) continue;
+          seenA.add(key);
+          ai += 1;
+          log(`    音频 ${ai}. ${(x.e.bitrate / 1000).toFixed(0)}kbps  ${x.e.tag}`);
+          log(`      ${stripRange(x.url)}`);
+        }
       }
+      log('\n只列直链，没有下载任何东西。');
       return null;
     }
     if (!chosen) die(4, '抓到了地址但挑不出可用的视频轨。');
+
+    // 发布时间：页面里 /api/v1/media/<id>/info/ 这个接口带 taken_at，
+    // 但只有登录态 + 页面上下文（自动带 cookie、带 x-ig-app-id）才给 JSON。
+    // 拿不到不影响下载，{date}/{time} 会退回下载时刻。
+    let takenAt = 0;
+    if (st.mediaId) {
+      try {
+        const tr = await cdp.send('Runtime.evaluate', {
+          expression: `(async () => {
+            try {
+              const r = await fetch('/api/v1/media/${st.mediaId}/info/', {
+                credentials: 'include',
+                headers: { 'x-ig-app-id': '936619743392459' },
+              });
+              if (!r.ok) return 'HTTP ' + r.status;
+              const j = await r.json();
+              const it = (j.items && j.items[0]) || (j.data && j.data.items && j.data.items[0]);
+              return it && it.taken_at ? String(it.taken_at) : 'NO_TAKEN_AT';
+            } catch (e) { return 'ERR ' + String(e); }
+          })()`,
+          awaitPromise: true,
+          returnByValue: true,
+        }, sid);
+        // 注意 CDP.send 已经把 m.result 解出来了，所以这里取的是 result.value（不是 result.result.value）
+        const raw = String(tr.result?.value ?? '');
+        takenAt = /^\d{9,}$/.test(raw) ? Number(raw) : 0;
+        if (!takenAt && process.env.IGDEBUG) {
+          log(`发布时间接口没给出时间：${raw || '(空)'}`);
+          if (tr.exceptionDetails) log(`  页面异常：${JSON.stringify(tr.exceptionDetails).slice(0, 400)}`);
+        }
+      } catch (e) {
+        takenAt = 0;
+        if (process.env.IGDEBUG) log(`发布时间接口调用失败：${e && e.message ? e.message : e}`);
+      }
+      if (takenAt && process.env.IGDEBUG) log(`发布时间：${new Date(takenAt * 1000).toISOString()}`);
+    }
+    if (!takenAt && st.code) {
+      // 退路：页面 HTML 里的 web_info 预取数据（没登录也能有）。
+      // 必须按 shortcode 定位再取附近的 taken_at —— 页面里混着推荐流的其他人的帖子，
+      // 直接取第一个 "taken_at" 有可能拿到别人的发布时间。
+      try {
+        const tr2 = await cdp.send('Runtime.evaluate', {
+          expression: `(() => {
+            const code = ${JSON.stringify(String(st.code))};
+            const html = document.documentElement.innerHTML;
+            let idx = -1;
+            while ((idx = html.indexOf('"' + code + '"', idx + 1)) >= 0) {
+              const win = html.slice(Math.max(0, idx - 6000), Math.min(html.length, idx + 6000));
+              const m = win.match(/"taken_at"\\s*:\\s*(\\d{9,})/);
+              if (m) return m[1];
+            }
+            return '';
+          })()`,
+          returnByValue: true,
+        }, sid);
+        takenAt = Number(tr2.result?.value) || 0;
+      } catch { /* 忽略 */ }
+    }
 
     const vUrl = chosen.list.filter((x) => !x.e.isAudio).sort((a, b) => b.e.bitrate - a.e.bitrate)[0]?.url;
     const aUrl = chosen.list.filter((x) => x.e.isAudio).sort((a, b) => b.e.bitrate - a.e.bitrate)[0]?.url;
@@ -717,8 +832,11 @@ async function grab(pageUrl, shared = null) {
     if (outFile) igdArgv.push('-o', outFile);
     const nameTpl = opt(['--name', '-N']);
     if (nameTpl) igdArgv.push('--name', nameTpl);
-    const userName = opt(['--user']);
+    // 作者账号：命令行 --user 优先，否则用页面上读到的作者，再不然让 igd.mjs 从链接里抠
+    const userName = opt(['--user']) || st.author || '';
     if (userName) igdArgv.push('--user', userName);
+    // 发布时间：{date}/{time} 用它，跟 X 那边统一成「发布时间」
+    if (takenAt) igdArgv.push('--taken-at', String(takenAt));
     if (has(['--force'])) igdArgv.push('--force');
 
     // igd.mjs 用 fetch 直连 CDN，本机必须带 --use-env-proxy 才走代理。
@@ -745,12 +863,14 @@ const USAGE =
   '  node igauto.mjs <ig链接>                   # 之后：只给链接，自动抓直链并下载\n' +
   '  node igauto.mjs <链接1> <链接2> <链接3>     # 多条一起，浏览器只起一次\n' +
   '  node igauto.mjs --file list.txt            # 从文件读链接，一行一条\n' +
-  '  node igauto.mjs <ig链接> --list            # 只看识别到什么，不下载\n' +
-  '  node igauto.mjs <ig链接> --out-dir <目录> --name "{user}_{date}_{dur}s"\n' +
+  '  node igauto.mjs <ig链接> --list            # 只列出所有清晰度档位的直链，不下载\n' +
+  '  node igauto.mjs <ig链接> --out-dir <目录> --name "{date}_{dur}s"\n' +
+  '                                             （文件名开头自动加发布者账号）\n' +
   '  node igauto.mjs --logout                  # 清掉本机登录态（把工具分享给别人之前跑）\n' +
+  '默认行为：只给链接就直接下载最高清晰度；勾/加 --list 才只列直链。\n' +
   '可选：--login-wait <分钟>（等登录的时间，默认 10；窗口被关掉会自动重开）\n' +
   '      --headful（显示窗口，排查用）  --proxy <url>  --profile <目录>  --browser <exe>  --force\n' +
-  '      --user <名字>（给 {user} 占位符用；链接里带用户名时不必给）';
+  '      --user <名字>（给 {user} 占位符用；一般从页面 og:url 自动读）';
 
 async function main() {
   if (has(['--help', '-h'])) { console.log(USAGE); return null; }
